@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AI Adaptive Traffic Signal – Q-Learning Simulation</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1b1f24;--mut:#5d6672;--bd:#d9dde3;--road:#4a525c;--car:#e8913a;--ac:#2563eb;--ok:#16a34a;--bad:#dc2626;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14171b;--card:#1d2127;--tx:#e8eaed;--mut:#9aa3ad;--bd:#323841;--road:#3a4048;--car:#f0a35a;--ac:#6b9bff;--ok:#4ade80;--bad:#f87171;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#14171b;--card:#1d2127;--tx:#e8eaed;--mut:#9aa3ad;--bd:#323841;--road:#3a4048;--car:#f0a35a;--ac:#6b9bff;--ok:#4ade80;--bad:#f87171;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:16px}
+.w{max-width:900px;margin:0 auto}h1{font-size:1.35rem;margin:0 0 4px}p{margin:0 0 10px;color:var(--mut)}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:14px}
+.row{display:flex;gap:14px;flex-wrap:wrap}.row>*{flex:1 1 260px}
+label{display:block;font-size:.85rem;color:var(--mut)}input[type=range]{width:100%}
+button,select{font:inherit;padding:7px 12px;border-radius:8px;border:1px solid var(--bd);background:var(--card);color:var(--tx);cursor:pointer}
+button.p{background:var(--ac);color:#fff;border-color:var(--ac)}
+canvas{width:100%;height:auto;display:block;background:var(--bg);border-radius:8px}
+h2{font-size:1rem;margin:0 0 8px}.m{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center;margin-top:8px}
+.m b{display:block;font-size:1.25rem}.m span{font-size:.75rem;color:var(--mut)}
+#imp{font-size:1.6rem;font-weight:700;color:var(--ok)}
+</style></head><body><div class="w">
+<h1>AI Adaptive Traffic Signal Control</h1>
+<p>A Q-learning agent (right) learns when to switch the lights; a fixed-timer controller (left) just alternates every 20 s. Both face the exact same random traffic.</p>
+
+<div class="card"><div class="row">
+<div><label>North–South traffic: <b id="vns"></b> cars/tick per approach</label><input id="ns" type="range" min="0.05" max="0.4" step="0.01" value="0.30"></div>
+<div><label>East–West traffic: <b id="vew"></b> cars/tick per approach</label><input id="ew" type="range" min="0.05" max="0.4" step="0.01" value="0.10"></div>
+</div>
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+<button class="p" id="pz">Pause</button><button id="rs">Reset run</button><button id="tr">Train AI +100k steps</button>
+<select id="sp"><option value="1">Speed 1×</option><option value="4" selected>Speed 4×</option><option value="15">Speed 15×</option></select>
+<span id="st" style="align-self:center;color:var(--mut);font-size:.85rem"></span></div></div>
+
+<div class="row">
+<div class="card"><h2>Fixed-timer controller</h2><canvas id="c0" width="300" height="300"></canvas>
+<div class="m"><div><b id="q0">0</b><span>Queue now</span></div><div><b id="w0">0</b><span>Avg wait (s)</span></div><div><b id="o0">0</b><span>Cars served</span></div></div></div>
+<div class="card"><h2>Q-learning AI controller</h2><canvas id="c1" width="300" height="300"></canvas>
+<div class="m"><div><b id="q1">0</b><span>Queue now</span></div><div><b id="w1">0</b><span>Avg wait (s)</span></div><div><b id="o1">0</b><span>Cars served</span></div></div></div>
+</div>
+
+<div class="card"><h2>Average waiting time reduction by AI</h2><div id="imp">–</div>
+<canvas id="ch" width="860" height="200" style="margin-top:8px"></canvas>
+<p style="margin-top:8px;font-size:.8rem">Chart: rolling queue length (orange = fixed timer, blue = AI). Lower is better.</p></div>
+
+<div class="card"><h2>How it works</h2>
+<p><b>State:</b> queue levels of the NS and EW approaches, current phase, and whether minimum green time has passed (400 states). <b>Actions:</b> keep or switch the phase. <b>Reward:</b> negative total queue length minus a small switching penalty. <b>Update:</b> Q(s,a) ← Q(s,a) + 0.1·[r + 0.9·max Q(s′,a′) − Q(s,a)]. One tick = 2 s; each green approach releases one car per tick; a switch costs one tick of lost (yellow) time.</p></div>
+</div>
+<script>
+//CORE
+const MIN=3,TICK=2;
+function rng(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+class Env{constructor(){this.q=[0,0,0,0];this.phase=0;this.timer=0;this.lost=0;this.cum=0;this.out=0;this.t=0}
+state(){const q=this.q,a=Math.min(9,Math.floor((q[0]+q[1])/2)),b=Math.min(9,Math.floor((q[2]+q[3])/2));return((a*10+b)*2+this.phase)*2+(this.timer>=MIN?1:0)}
+step(act,arr){let blocked=this.lost>0,sw=0;if(blocked)this.lost--;
+if(act==1&&this.timer>=MIN&&!blocked){this.phase^=1;this.timer=0;this.lost=1;sw=1;blocked=true}else this.timer++;
+if(!blocked){const g=this.phase==0?[0,1]:[2,3];for(const i of g)if(this.q[i]>0){this.q[i]--;this.out++}}
+for(let i=0;i<4;i++)this.q[i]+=arr[i];
+const tot=this.q[0]+this.q[1]+this.q[2]+this.q[3];this.cum+=tot;this.t++;return -tot/10-sw*0.3}}
+const Q=new Float64Array(400*2);
+function act(s,eps,R){if(R()<eps)return R()<.5?0:1;return Q[s*2+1]>Q[s*2]?1:0}
+function train(n){let e=new Env(),r=[.2,.2,.2,.2];for(let i=0;i<n;i++){if(i%400==0){const a=.05+Math.random()*.35,b=.05+Math.random()*.35;r=[a,a,b,b];e=new Env();e.q=e.q.map(()=>Math.floor(Math.random()*12))}
+const eps=Math.max(.05,.4*(1-i/n)),s=e.state(),a=act(s,eps,Math.random),rw=e.step(a,r.map(x=>Math.random()<x?1:0)),s2=e.state();
+Q[s*2+a]+=.1*(rw+.9*Math.max(Q[s2*2],Q[s2*2+1])-Q[s*2+a])}}
+//ENDCORE
+const $=id=>document.getElementById(id);
+let F,A,R,hF,hA,paused=false,steps=0,rNS=.3,rEW=.1;
+function reset(){F=new Env();A=new Env();R=rng(42);hF=[];hA=[]}
+function tick(){const arr=[0,1,2,3].map(i=>R()<(i<2?rNS:rEW)?1:0);
+F.step(F.timer>=10?1:0,arr);A.step(act(A.state(),0,R),arr);
+hF.push(F.q.reduce((a,b)=>a+b));hA.push(A.q.reduce((a,b)=>a+b))}
+function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v)}
+function draw(cv,e){const c=cv.getContext('2d'),W=300,m=150;c.clearRect(0,0,W,W);
+c.fillStyle=css('--road');c.fillRect(m-22,0,44,W);c.fillRect(0,m-22,W,44);
+c.strokeStyle=css('--mut');c.setLineDash([6,6]);c.beginPath();c.moveTo(m,0);c.lineTo(m,m-22);c.moveTo(m,m+22);c.lineTo(m,W);c.moveTo(0,m);c.lineTo(m-22,m);c.moveTo(m+22,m);c.lineTo(W,m);c.stroke();c.setLineDash([]);
+c.fillStyle=css('--car');
+for(let i=0;i<4;i++){const n=Math.min(e.q[i],11);for(let k=0;k<n;k++){const d=26+k*11;
+let x,y;if(i==0){x=m-16;y=m-d-8}else if(i==1){x=m+8;y=m+d}else if(i==2){x=m+d;y=m-16}else{x=m-d-8;y=m+8}
+c.fillRect(x,y,8,8)}
+if(e.q[i]>11){c.fillStyle=css('--tx');c.font='11px sans-serif';const t='+'+(e.q[i]-11);
+if(i==0)c.fillText(t,m+26,14);else if(i==1)c.fillText(t,m-44,W-6);else if(i==2)c.fillText(t,W-26,m+40);else c.fillText(t,4,m-26);c.fillStyle=css('--car')}}
+const col=(on)=>e.lost>0?'#eab308':on?'#22c55e':'#ef4444';
+[[m-30,m-30,0],[m+30,m+30,0],[m+30,m-30,1],[m-30,m+30,1]].forEach(([x,y,p])=>{c.fillStyle=col(e.phase==p);c.beginPath();c.arc(x,y,5,0,7);c.fill()})}
+function chart(){const cv=$('ch'),c=cv.getContext('2d'),W=860,H=200;c.clearRect(0,0,W,H);
+const N=300,sm=a=>{const o=[],s=Math.max(0,a.length-N);for(let i=s;i<a.length;i++){let t=0,k=0;for(let j=Math.max(0,i-30);j<=i;j++){t+=a[j];k++}o.push(t/k)}return o};
+const f=sm(hF),a=sm(hA),mx=Math.max(5,...f,...a)*1.1;c.lineWidth=2;
+[[f,'--car'],[a,'--ac']].forEach(([d,v])=>{c.strokeStyle=css(v);c.beginPath();d.forEach((y,i)=>{const px=i/(N-1)*W,py=H-6-y/mx*(H-12);i?c.lineTo(px,py):c.moveTo(px,py)});c.stroke()});
+c.fillStyle=css('--mut');c.font='11px sans-serif';c.fillText('max '+mx.toFixed(0)+' cars',4,12)}
+function ui(){const w=e=>(e.cum*TICK/Math.max(1,e.out)),sum=e=>e.q.reduce((a,b)=>a+b);
+$('q0').textContent=sum(F);$('q1').textContent=sum(A);$('w0').textContent=w(F).toFixed(1);$('w1').textContent=w(A).toFixed(1);$('o0').textContent=F.out;$('o1').textContent=A.out;
+$('imp').textContent=F.t>50?((w(F)-w(A))/w(F)*100).toFixed(1)+'% lower wait':'–';
+draw($('c0'),F);draw($('c1'),A);chart()}
+function sl(){rNS=+$('ns').value;rEW=+$('ew').value;$('vns').textContent=rNS.toFixed(2);$('vew').textContent=rEW.toFixed(2)}
+$('ns').oninput=$('ew').oninput=sl;
+$('pz').onclick=()=>{paused=!paused;$('pz').textContent=paused?'Resume':'Pause'};
+$('rs').onclick=()=>{reset();ui()};
+$('tr').onclick=()=>{train(100000);steps+=100000;$('st').textContent='AI trained for '+steps.toLocaleString()+' steps'};
+sl();train(300000);steps=300000;$('st').textContent='AI pre-trained for 300,000 steps';reset();
+setInterval(()=>{if(!paused){const n=+$('sp').value;for(let i=0;i<n;i++)tick()}ui()},60);
+</script></body></html>
