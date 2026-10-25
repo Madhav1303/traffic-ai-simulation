@@ -2,7 +2,7 @@
 
 An interactive browser simulation that compares a **fixed-timer traffic signal** with an **AI controller trained using Q-learning**, a reinforcement learning algorithm. Both controllers face the same random traffic, so the comparison is fair.
 
-**Live demo:** https://[your-username].github.io/traffic-ai-simulation/
+**Live demo:** https://madhav1303.github.io/traffic-ai-simulation/.
 
 ## Features
 - Side-by-side intersections: fixed timer vs AI
